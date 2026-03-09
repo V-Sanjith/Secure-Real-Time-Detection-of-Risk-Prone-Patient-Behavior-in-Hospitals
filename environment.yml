@@ -1,5 +1,6 @@
 name: hospital-monitor
 channels:
+  - pytorch
   - conda-forge
   - defaults
 dependencies:
@@ -12,8 +13,9 @@ dependencies:
   - scikit-learn
   - plotly
   - pillow
+  - pytorch::pytorch
+  - pytorch::torchvision
+  - pytorch::cpuonly
   - pip:
     - streamlit>=1.28.0
     - ultralytics>=8.0.0
-    - torch>=2.0.0
-    - torchvision>=0.15.0

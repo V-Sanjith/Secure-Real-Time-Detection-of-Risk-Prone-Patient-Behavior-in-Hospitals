@@ -13,9 +13,9 @@ dependencies:
   - scikit-learn
   - plotly
   - pillow
+  - ultralytics
   - pytorch::pytorch
   - pytorch::torchvision
   - pytorch::cpuonly
   - pip:
     - streamlit>=1.28.0
-    - ultralytics>=8.0.0

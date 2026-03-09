@@ -1,9 +1,25 @@
 import streamlit as st
-import cv2
+
+# ── Page config must be first Streamlit call ──────────────────────────
+st.set_page_config(
+    page_title="Hospital Patient Monitoring System",
+    page_icon="🏥",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ── Optional cv2 import (may fail on cloud due to missing libGL) ───────
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except Exception:
+    CV2_AVAILABLE = False
+    cv2 = None
+
 import numpy as np
 import tempfile
 import os
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import time
 from collections import deque
 import math
@@ -594,16 +610,20 @@ class TemporalAnalyzer:
 
 # Custom annotation functions
 def draw_bounding_box(image, bbox, color, label, thickness=2):
-    x1, y1, x2, y2 = map(int, bbox)
-    cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
-    
-    # Draw label background
-    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-    cv2.rectangle(image, (x1, y1 - label_size[1] - 5), (x1 + label_size[0] + 5, y1), color, -1)
-    
-    # Draw label text
-    cv2.putText(image, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, Colors.WHITE, 1)
-    
+    if CV2_AVAILABLE:
+        x1, y1, x2, y2 = map(int, bbox)
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+        cv2.rectangle(image, (x1, y1 - label_size[1] - 5), (x1 + label_size[0] + 5, y1), color, -1)
+        cv2.putText(image, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, Colors.WHITE, 1)
+    else:
+        # PIL fallback
+        pil_img = Image.fromarray(image)
+        draw = ImageDraw.Draw(pil_img)
+        x1, y1, x2, y2 = map(int, bbox)
+        draw.rectangle([x1, y1, x2, y2], outline=tuple(color), width=thickness)
+        draw.text((x1, max(0, y1 - 15)), label, fill=tuple(color))
+        image[:] = np.array(pil_img)
     return image
 
 # Main Patient Monitor Class
@@ -797,17 +817,22 @@ class HospitalPatientMonitor:
         # Add warning overlay if needed
         if warning:
             h, w = annotated_frame.shape[:2]
-            overlay = annotated_frame.copy()
-            cv2.rectangle(overlay, (0, 0), (w, h), Colors.RED, -1)
-            cv2.addWeighted(overlay, 0.1, annotated_frame, 0.9, 0, annotated_frame)
-            
-            warning_text = "ALERT: Single patient moving alone!"
-            text_size = cv2.getTextSize(warning_text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
-            text_x = (w - text_size[0]) // 2
-            text_y = (h + text_size[1]) // 2
-            cv2.putText(annotated_frame, warning_text, (text_x, text_y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, Colors.RED, 2)
-        
+            if CV2_AVAILABLE:
+                overlay = annotated_frame.copy()
+                cv2.rectangle(overlay, (0, 0), (w, h), Colors.RED, -1)
+                cv2.addWeighted(overlay, 0.1, annotated_frame, 0.9, 0, annotated_frame)
+                warning_text = "ALERT: Single patient moving alone!"
+                text_size = cv2.getTextSize(warning_text, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
+                text_x = (w - text_size[0]) // 2
+                text_y = (h + text_size[1]) // 2
+                cv2.putText(annotated_frame, warning_text, (text_x, text_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, Colors.RED, 2)
+            else:
+                pil_img = Image.fromarray(annotated_frame)
+                draw = ImageDraw.Draw(pil_img)
+                draw.text((w // 4, h // 2), "ALERT: Single patient moving alone!", fill=(255, 0, 0))
+                annotated_frame[:] = np.array(pil_img)
+
         return annotated_frame
 
 # Ablation Study Class
@@ -1239,48 +1264,38 @@ class HospitalMonitoringApp:
     
     def run_webcam(self):
         """Run webcam monitoring"""
+        if not CV2_AVAILABLE:
+            st.error("❌ OpenCV (cv2) is not available in this cloud environment. Webcam monitoring requires a local installation. Please run the app locally with `streamlit run revisedhos.py`.")
+            return
         try:
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
                 st.error("❌ Could not access webcam. Please check if it's connected.")
                 return
-            
-            # Set camera resolution
+
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            
+
             stframe = st.empty()
             status_placeholder = st.empty()
             warning_placeholder = st.empty()
-            
+
             stop_button = st.button("🛑 Stop Monitoring", key="stop_webcam")
-            
             st.success("🔴 Live monitoring started! Press 'Stop Monitoring' to end.")
-            
+
             while cap.isOpened() and not stop_button:
                 ret, frame = cap.read()
                 if not ret:
                     st.error("❌ Failed to capture frame from webcam")
                     break
-                
-                # Process frame
                 processed_frame, analysis = self.monitor.process_frame(frame)
-                
-                # Convert BGR to RGB for display
                 processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                
-                # Display processed frame
                 stframe.image(processed_frame_rgb, channels="RGB", use_container_width=True)
-                
-                # Display analysis results
                 self.display_analysis(analysis, status_placeholder, warning_placeholder)
-                
-                # Small delay to prevent high CPU usage
                 time.sleep(0.1)
-                
+
             cap.release()
             st.success("✅ Webcam monitoring stopped")
-            
         except Exception as e:
             st.error(f"❌ Error in webcam processing: {e}")
     
@@ -1321,58 +1336,45 @@ class HospitalMonitoringApp:
     
     def analyze_video_file(self, video_path):
         """Analyze uploaded video file"""
+        if not CV2_AVAILABLE:
+            st.error("❌ OpenCV (cv2) is not available in this cloud environment. Video analysis requires a local installation. Please run the app locally with `streamlit run revisedhos.py`.")
+            return
         try:
             progress_bar = st.progress(0)
             status_placeholder = st.empty()
             video_placeholder = st.empty()
             stats_placeholder = st.empty()
-            
+
             cap = cv2.VideoCapture(video_path)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS)
-            
+
             if total_frames == 0:
                 st.error("❌ Could not read video file. Please try a different video.")
                 return
-            
+
             st.info(f"🎬 Video info: {total_frames} frames, {fps:.1f} FPS")
-            
             frame_count = 0
             analysis_results = []
-            
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
-                # Process frame
                 processed_frame, analysis = self.monitor.process_frame(frame)
                 analysis_results.append(analysis)
-                
-                # Convert for display
                 processed_frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
                 video_placeholder.image(processed_frame_rgb, channels="RGB", use_container_width=True)
-                
-                # Display current analysis
                 self.display_analysis(analysis, status_placeholder)
-                
-                # Update progress
                 if total_frames > 0:
-                    progress = (frame_count + 1) / total_frames
-                    progress_bar.progress(min(progress, 1.0))
-                
+                    progress_bar.progress(min((frame_count + 1) / total_frames, 1.0))
                 frame_count += 1
-                
-                # Show processing stats
                 if frame_count % 30 == 0:
                     stats_placeholder.info(f"🔄 Processed {frame_count}/{total_frames} frames...")
-            
+
             cap.release()
-            
-            # Show final statistics
             self.show_video_statistics(analysis_results)
             st.success("✅ Video analysis completed!")
-            
         except Exception as e:
             st.error(f"❌ Error processing video: {e}")
     
@@ -1431,29 +1433,22 @@ class HospitalMonitoringApp:
             
             with col2:
                 if st.button("🔍 Analyze Image", use_container_width=True, key="analyze_image"):
-                    try:
-                        # Convert to numpy array
-                        image_np = np.array(image)
-                        
-                        # Convert to BGR for processing
-                        if image_np.shape[-1] == 4:
-                            image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGBA2BGR)
-                        else:
-                            image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-                        
-                        # Process image
-                        processed_image, analysis = self.monitor.process_frame(image_bgr)
-                        processed_image_rgb = cv2.cvtColor(processed_image, cv2.COLOR_BGR2RGB)
-                        
-                        # Display results
-                        st.subheader("Processed Image")
-                        st.image(processed_image_rgb, use_container_width=True)
-                        
-                        # Display analysis
-                        self.display_analysis(analysis)
-                        
-                    except Exception as e:
-                        st.error(f"❌ Error processing image: {e}")
+                    if not CV2_AVAILABLE:
+                        st.error("❌ OpenCV (cv2) is not available in this cloud environment. Image analysis requires a local installation. Please run the app locally with `streamlit run revisedhos.py`.")
+                    else:
+                        try:
+                            image_np = np.array(image)
+                            if image_np.shape[-1] == 4:
+                                image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGBA2BGR)
+                            else:
+                                image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+                            processed_image, analysis = self.monitor.process_frame(image_bgr)
+                            processed_image_rgb = cv2.cvtColor(processed_image, cv2.COLOR_BGR2RGB)
+                            st.subheader("Processed Image")
+                            st.image(processed_image_rgb, use_container_width=True)
+                            self.display_analysis(analysis)
+                        except Exception as e:
+                            st.error(f"❌ Error processing image: {e}")
             
             # Clear button
             if st.button("🔄 Clear Image", use_container_width=True, key="clear_image"):
@@ -1578,38 +1573,32 @@ class HospitalMonitoringApp:
         else:
             self.show_about()
 
-# Main execution
-if __name__ == "__main__":
-    # Page configuration
-    st.set_page_config(
-        page_title="Hospital Patient Monitoring System",
-        page_icon="🏥",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Custom CSS
-    st.markdown("""
-    <style>
-        .main-header {
-            font-size: 3rem;
-            color: #1f77b4;
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-        .stButton button {
-            width: 100%;
-            margin: 5px 0;
-        }
-        .uploadedFile {
-            background-color: #f0f2f6;
-            padding: 10px;
-            border-radius: 5px;
-            margin: 5px 0;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # Initialize and run the app
-    app = HospitalMonitoringApp()
-    app.run()
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .stButton button {
+        width: 100%;
+        margin: 5px 0;
+    }
+    .uploadedFile {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 5px 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Warn if cv2 not available
+if not CV2_AVAILABLE:
+    st.sidebar.warning("⚠️ OpenCV not available in this environment. Dashboard & Analytics work fully. Live monitoring features require local installation.")
+
+# Initialize and run the app
+app = HospitalMonitoringApp()
+app.run()
